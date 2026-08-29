@@ -5,7 +5,7 @@ import {
     getCryptoAssetById,
     updateCryptoAsset,
     deleteCryptoAsset
-} from '../controllers/cryptoController.js';
+} from '../controllers/CryptoController.js';
 
 const router = express.Router();
 
