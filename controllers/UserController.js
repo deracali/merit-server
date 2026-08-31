@@ -1,5 +1,14 @@
 import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
+import axios from 'axios';
+
+// Initialize Google OAuth2 Client with Redirect URI
+const googleClient = new OAuth2Client(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI // e.g. http://localhost:5000/api/auth/google/callback or your deployed backend URL
+);
 
 // ====== Helper: Generate JWT Token ======
 const generateToken = (id) => {
@@ -8,32 +17,25 @@ const generateToken = (id) => {
     });
 };
 
-// Map full names/options to standard ticker symbols
 const COIN_MAP = {
     'BITCOIN': 'BTC',
     'BTC': 'BTC',
     'BITCOIN (BTC)': 'BTC',
-
     'ETHEREUM': 'ETH',
     'ETH': 'ETH',
     'ETHEREUM (ETH)': 'ETH',
-
     'TETHER': 'USDT',
     'USDT': 'USDT',
     'TETHER (USDT)': 'USDT',
-
     'USD COIN': 'USDC',
     'USDC': 'USDC',
     'USD COIN (USDC)': 'USDC',
-
     'BINANCE COIN': 'BNB',
     'BNB': 'BNB',
     'BNB (BNB)': 'BNB',
-
     'SOLANA': 'SOL',
     'SOL': 'SOL',
     'SOLANA (SOL)': 'SOL',
-
     'RIPPLE': 'XRP',
     'XRP': 'XRP',
     'XRP (XRP)': 'XRP'
@@ -46,8 +48,181 @@ const normalizeCoin = (val) => {
 };
 
 // =========================================================
-// 1. AUTHENTICATION CONTROLLERS
+// 1. REDIRECT GOOGLE AUTHENTICATION (Browser Flow)
 // =========================================================
+
+/**
+ * @route GET /api/auth/google
+ * @desc  Triggers browser redirect to Google login screen
+ */
+export const googleAuthRedirect = (req, res) => {
+    const scopes = [
+        'https://www.googleapis.com/auth/userinfo.profile',
+        'https://www.googleapis.com/auth/userinfo.email'
+    ];
+
+    const url = googleClient.generateAuthUrl({
+        access_type: 'offline',
+        scope: scopes,
+        prompt: 'consent'
+    });
+
+    res.redirect(url);
+};
+
+/**
+ * @route GET /api/auth/google/callback
+ * @desc  Google redirects back here -> verifies user -> redirects to home.html
+ */
+export const googleCallback = async (req, res) => {
+    try {
+        const { code } = req.query;
+
+        if (!code) {
+            return res.redirect('https://foretradex.vercel.app/log-in.html?error=Authorization+failed');
+        }
+
+        // Exchange authorization code for tokens
+        const { tokens } = await googleClient.getToken(code);
+        googleClient.setCredentials(tokens);
+
+        // Extract user profile from ID token
+        const ticket = await googleClient.verifyIdToken({
+            idToken: tokens.id_token,
+            audience: process.env.GOOGLE_CLIENT_ID
+        });
+
+        const payload = ticket.getPayload();
+        const { sub: googleId, email, given_name, family_name, picture } = payload;
+
+        let user = await User.findOne({ $or: [{ googleId }, { email }] });
+
+        if (user) {
+            if (!user.googleId) {
+                user.googleId = googleId;
+                if (!user.profilePicture) user.profilePicture = picture;
+                await user.save();
+            }
+        } else {
+            user = await User.create({
+                email,
+                googleId,
+                authProvider: 'google',
+                profilePicture: picture || '',
+                kyc: {
+                    firstName: given_name || 'Google',
+                    lastName: family_name || 'User'
+                }
+            });
+        }
+
+        const token = generateToken(user._id);
+
+        // Direct browser redirect to your live home page with token attached
+        res.redirect(`https://foretradex.vercel.app/home.html?token=${token}`);
+    } catch (error) {
+        console.error('Google Callback Error:', error.message);
+        res.redirect(`https://foretradex.vercel.app/log-in.html?error=${encodeURIComponent(error.message)}`);
+    }
+};
+
+// =========================================================
+// 2. DIRECT TOKEN AUTHENTICATION (For Popups / SDKs)
+// =========================================================
+
+export const googleLogin = async (req, res) => {
+    try {
+        const { idToken } = req.body;
+
+        if (!idToken) {
+            return res.status(400).json({ success: false, message: 'Google ID token is required' });
+        }
+
+        const ticket = await googleClient.verifyIdToken({
+            idToken,
+            audience: process.env.GOOGLE_CLIENT_ID
+        });
+
+        const payload = ticket.getPayload();
+        const { sub: googleId, email, given_name, family_name, picture } = payload;
+
+        let user = await User.findOne({ $or: [{ googleId }, { email }] });
+
+        if (user) {
+            if (!user.googleId) {
+                user.googleId = googleId;
+                if (!user.profilePicture) user.profilePicture = picture;
+                await user.save();
+            }
+        } else {
+            user = await User.create({
+                email,
+                googleId,
+                authProvider: 'google',
+                profilePicture: picture || '',
+                kyc: {
+                    firstName: given_name || 'Google',
+                    lastName: family_name || 'User'
+                }
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Google login successful',
+            token: generateToken(user._id),
+            data: user
+        });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+export const facebookLogin = async (req, res) => {
+    try {
+        const { accessToken } = req.body;
+
+        if (!accessToken) {
+            return res.status(400).json({ success: false, message: 'Facebook access token is required' });
+        }
+
+        const { data } = await axios.get(
+            `https://graph.facebook.com/me?fields=id,email,first_name,last_name,picture.type(large)&access_token=${accessToken}`
+        );
+
+        const { id: facebookId, email, first_name, last_name, picture } = data;
+        const userEmail = email || `${facebookId}@facebook.com`;
+
+        let user = await User.findOne({ $or: [{ facebookId }, { email: userEmail }] });
+
+        if (user) {
+            if (!user.facebookId) {
+                user.facebookId = facebookId;
+                await user.save();
+            }
+        } else {
+            user = await User.create({
+                email: userEmail,
+                facebookId,
+                authProvider: 'facebook',
+                profilePicture: picture?.data?.url || '',
+                kyc: {
+                    firstName: first_name || 'Facebook',
+                    lastName: last_name || 'User'
+                }
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Facebook login successful',
+            token: generateToken(user._id),
+            data: user
+        });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
 
 export const registerUser = async (req, res) => {
     try {

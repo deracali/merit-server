@@ -11,7 +11,11 @@ import {
     createTransaction,
     setTransactionPin,
     getMonthlyTransactions,
-    updateTransactionStatus
+    updateTransactionStatus,
+    googleLogin, 
+    facebookLogin,
+    googleAuthRedirect,
+    googleCallback
 } from '../controllers/UserController.js';
 
 const router = express.Router();
@@ -23,6 +27,10 @@ router.get('/:userId/monthly-transactions', getMonthlyTransactions);
 // Authentication Routes
 router.post('/register', registerUser);
 router.post('/login', loginUser);
+router.post('/google', googleLogin);
+router.post('/facebook', facebookLogin);
+router.get('/google', googleAuthRedirect);
+router.get('/google/callback', googleCallback);
 router.put('/:userId/set-pin', setTransactionPin);
 // Profile Alteration & Removal Routes
 router.put('/:userId', updateUser);      // PUT /api/users/:userId

@@ -1,0 +1,17 @@
+# Node modules / Dependencies
+node_modules/
+
+# Environment files with sensitive credentials
+.env
+.env.local
+
+# Operating system generated files
+.DS_Store
+Thumbs.db
+
+# Build outputs
+dist/
+build/
+
+# Log files
+*.log
