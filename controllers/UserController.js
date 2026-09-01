@@ -8,10 +8,9 @@ import axios from 'axios';
 const googleClient = new OAuth2Client(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI // e.g. http://localhost:5000/api/auth/google/callback or your deployed backend URL
+    process.env.GOOGLE_REDIRECT_URI
 );
 
-// ====== Helper: Generate JWT Token ======
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET || 'fallback_secret_key', {
         expiresIn: '30d',
@@ -19,27 +18,13 @@ const generateToken = (id) => {
 };
 
 const COIN_MAP = {
-    'BITCOIN': 'BTC',
-    'BTC': 'BTC',
-    'BITCOIN (BTC)': 'BTC',
-    'ETHEREUM': 'ETH',
-    'ETH': 'ETH',
-    'ETHEREUM (ETH)': 'ETH',
-    'TETHER': 'USDT',
-    'USDT': 'USDT',
-    'TETHER (USDT)': 'USDT',
-    'USD COIN': 'USDC',
-    'USDC': 'USDC',
-    'USD COIN (USDC)': 'USDC',
-    'BINANCE COIN': 'BNB',
-    'BNB': 'BNB',
-    'BNB (BNB)': 'BNB',
-    'SOLANA': 'SOL',
-    'SOL': 'SOL',
-    'SOLANA (SOL)': 'SOL',
-    'RIPPLE': 'XRP',
-    'XRP': 'XRP',
-    'XRP (XRP)': 'XRP'
+    'BITCOIN': 'BTC', 'BTC': 'BTC', 'BITCOIN (BTC)': 'BTC',
+    'ETHEREUM': 'ETH', 'ETH': 'ETH', 'ETHEREUM (ETH)': 'ETH',
+    'TETHER': 'USDT', 'USDT': 'USDT', 'TETHER (USDT)': 'USDT',
+    'USD COIN': 'USDC', 'USDC': 'USDC', 'USD COIN (USDC)': 'USDC',
+    'BINANCE COIN': 'BNB', 'BNB': 'BNB', 'BNB (BNB)': 'BNB',
+    'SOLANA': 'SOL', 'SOL': 'SOL', 'SOLANA (SOL)': 'SOL',
+    'RIPPLE': 'XRP', 'XRP': 'XRP', 'XRP (XRP)': 'XRP'
 };
 
 const normalizeCoin = (val) => {
@@ -52,10 +37,6 @@ const normalizeCoin = (val) => {
 // 1. REDIRECT GOOGLE AUTHENTICATION (Browser Flow)
 // =========================================================
 
-/**
- * @route GET /api/auth/google
- * @desc  Triggers browser redirect to Google login screen
- */
 export const googleAuthRedirect = (req, res) => {
     const scopes = [
         'https://www.googleapis.com/auth/userinfo.profile',
@@ -71,23 +52,17 @@ export const googleAuthRedirect = (req, res) => {
     res.redirect(url);
 };
 
-/**
- * @route GET /api/auth/google/callback
- * @desc  Google redirects back here -> verifies user -> redirects to home.html
- */
 export const googleCallback = async (req, res) => {
     try {
         const { code } = req.query;
 
         if (!code) {
-            return res.redirect('https://foretradex.vercel.app/log-in.html?error=Authorization+failed');
+            return res.redirect('https://foretradex.vercel.app/register.html?error=Authorization+failed');
         }
 
-        // Exchange authorization code for tokens
         const { tokens } = await googleClient.getToken(code);
         googleClient.setCredentials(tokens);
 
-        // Extract user profile from ID token
         const ticket = await googleClient.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID
@@ -97,6 +72,7 @@ export const googleCallback = async (req, res) => {
         const { sub: googleId, email, given_name, family_name, picture } = payload;
 
         let user = await User.findOne({ $or: [{ googleId }, { email }] });
+        let isNewUser = false;
 
         if (user) {
             if (!user.googleId) {
@@ -115,15 +91,21 @@ export const googleCallback = async (req, res) => {
                     lastName: family_name || 'User'
                 }
             });
+            isNewUser = true; // 👈 Track new user creation
         }
 
         const token = generateToken(user._id);
 
-        // Direct browser redirect to your live home page with token attached
-        res.redirect(`https://foretradex.vercel.app/home.html?token=${token}`);
+        // 🚀 Redirect to register.html if new user, home.html if existing
+        if (isNewUser) {
+            return res.redirect(`https://foretradex.vercel.app/register.html?token=${token}&isNewUser=true`);
+        } else {
+            return res.redirect(`https://foretradex.vercel.app/home.html?token=${token}`);
+        }
     } catch (error) {
         console.error('Google Callback Error:', error.message);
-        res.redirect(`https://foretradex.vercel.app/log-in.html?error=${encodeURIComponent(error.message)}`);
+        // If account creation or verification fails, redirect to register with error
+        res.redirect(`https://foretradex.vercel.app/register.html?error=${encodeURIComponent(error.message)}`);
     }
 };
 
@@ -148,6 +130,7 @@ export const googleLogin = async (req, res) => {
         const { sub: googleId, email, given_name, family_name, picture } = payload;
 
         let user = await User.findOne({ $or: [{ googleId }, { email }] });
+        let isNewUser = false;
 
         if (user) {
             if (!user.googleId) {
@@ -166,18 +149,22 @@ export const googleLogin = async (req, res) => {
                     lastName: family_name || 'User'
                 }
             });
+            isNewUser = true; // 👈 Track new user creation
         }
 
         res.status(200).json({
             success: true,
-            message: 'Google login successful',
+            message: isNewUser ? 'Google registration successful' : 'Google login successful',
             token: generateToken(user._id),
-            data: user
+            data: user,
+            isNewUser // 👈 Send to frontend popup handler
         });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
 };
+
+
 
 export const facebookLogin = async (req, res) => {
     try {
