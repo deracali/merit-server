@@ -1,9 +1,16 @@
-import dns from 'node:dns'; // 1. Import the DNS module
-dns.setDefaultResultOrder('ipv4first'); // 2. Force Node v20 to use IPv4 first
+import 'dotenv/config'; // Loads .env BEFORE any other module imports execute
+import dns from 'node:dns';
+dns.setDefaultResultOrder('ipv4first');
 dns.setServers(['1.1.1.1', '8.8.8.8']);
+
+// ====== Debug Logs ======
+console.log('--------------------------------------------------');
+console.log('📂 Working Directory:', process.cwd());
+console.log('🔑 MONGO_URI value:', process.env.MONGO_URI);
+console.log('--------------------------------------------------');
+
 import express from 'express';
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
 import cors from 'cors'; 
 import userRoutes from './routes/userRoutes.js';
 import authRoutes from './routes/oauthRoutes.js';
@@ -13,9 +20,6 @@ import './workers/investmentWorker.js';
 import withdrawalRoutes from './routes/withdrawalRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import accountAddressRoutes from './routes/accountAddressRoutes.js';
-
-// Load environment variables
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -46,7 +50,7 @@ app.use('/api/accounts', accountAddressRoutes);
 // Connect to MongoDB and Start Server
 mongoose
     .connect(process.env.MONGO_URI, {
-        family: 4 // 3. Double-enforce IPv4 explicitly for Mongoose
+        family: 4
     })
     .then(() => {
         console.log('🚀 Connected to MongoDB successfully!');
