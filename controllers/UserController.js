@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
@@ -361,10 +362,15 @@ export const getUserById = async (req, res) => {
     try {
         const { userId } = req.params;
 
-        // Change this:
-        // const user = await User.findById(userId).select('-password -transactionPin');
+        // Prevent CastError if userId is not a valid ObjectId (e.g. "google")
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Invalid user ID format' 
+            });
+        }
 
-        // To this (only excludes password):
+        // Returns user document excluding only the password field
         const user = await User.findById(userId).select('-password');
 
         if (!user) {

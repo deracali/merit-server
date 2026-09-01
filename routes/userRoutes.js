@@ -31,6 +31,7 @@ router.post('/google', googleLogin);
 router.post('/facebook', facebookLogin);
 router.get('/google', googleAuthRedirect);
 router.get('/google/callback', googleCallback);
+router.get('/google/:id', getUserById);
 router.put('/:userId/set-pin', setTransactionPin);
 // Profile Alteration & Removal Routes
 router.put('/:userId', updateUser);      // PUT /api/users/:userId
