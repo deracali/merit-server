@@ -6,6 +6,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors'; 
 import userRoutes from './routes/userRoutes.js';
+import authRoutes from './routes/oauthRoutes.js';
 import cryptoRoutes from './routes/cryptoRoutes.js';
 import tradeRoutes from './routes/tradeRoutes.js';
 import './workers/investmentWorker.js';
@@ -34,6 +35,7 @@ app.get('/', (req, res) => {
     res.json({ message: 'ES6 Server is up and running!' });
 });
 
+app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/crypto', cryptoRoutes);
 app.use('/api/trades', tradeRoutes);
