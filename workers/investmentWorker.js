@@ -1,4 +1,3 @@
-import cron from 'node-cron';
 import User from '../models/User.js';
 import { createNotificationHelper } from '../controllers/notificationController.js';
 
@@ -15,20 +14,19 @@ const getTierForBalance = (balance) => {
     return TIERS.find(tier => balance >= tier.min && balance <= tier.max) || null;
 };
 
-cron.schedule('0 0 * * *', async () => {
-    console.log('⏳ Processing daily compounding crypto yield distributions...');
+const processYields = async () => {
+    console.log('⏳ Processing yield distributions (every 4 seconds)...');
     try {
         const users = await User.find({ 'cryptoAccounts.0': { $exists: true } });
 
         for (let user of users) {
             for (let cryptoAccount of user.cryptoAccounts) {
-                // Fetch latest balance (includes previously compounded yields)
+                // Fetch latest balance
                 const currentBalance = cryptoAccount.balance;
                 const matchedTier = getTierForBalance(currentBalance);
 
                 // Process only if balance meets minimum Tier 1 requirement ($20)
                 if (matchedTier) {
-                    // Calculate yield on the full updated balance
                     const rawYield = currentBalance * matchedTier.rate;
                     const dailyYield = Number(rawYield.toFixed(6));
                     const yieldPercentageDisplay = (matchedTier.rate * 100).toFixed(1);
@@ -36,9 +34,14 @@ cron.schedule('0 0 * * *', async () => {
                     const timestamp = Date.now();
                     const uniqueRef = `YIELD-${cryptoAccount.coinName}-${user._id}-${timestamp}-${Math.floor(Math.random() * 10000)}`;
 
+                    // Match by _id if available, fallback to coinName
+                    const accountQuery = cryptoAccount._id 
+                        ? { _id: user._id, "cryptoAccounts._id": cryptoAccount._id }
+                        : { _id: user._id, "cryptoAccounts.coinName": cryptoAccount.coinName };
+
                     // Atomic update: increment balance and push history record
                     const updateResult = await User.updateOne(
-                        { _id: user._id, "cryptoAccounts._id": cryptoAccount._id },
+                        accountQuery,
                         {
                             $inc: { "cryptoAccounts.$.balance": dailyYield },
                             $push: {
@@ -47,7 +50,7 @@ cron.schedule('0 0 * * *', async () => {
                                     amount: dailyYield,
                                     currency: cryptoAccount.coinName,
                                     status: 'completed',
-                                    description: `Daily ${yieldPercentageDisplay}% (${matchedTier.name}) compounding yield earned on ${cryptoAccount.coinName}`,
+                                    description: `Yield ${yieldPercentageDisplay}% (${matchedTier.name}) earned on ${cryptoAccount.coinName}`,
                                     reference: uniqueRef
                                 }
                             }
@@ -59,7 +62,7 @@ cron.schedule('0 0 * * *', async () => {
 
                         await createNotificationHelper(
                             user._id,
-                            'Daily Yield Disbursed! 🚀',
+                            'Yield Disbursed! 🚀',
                             `Your balance grew! You earned +${dailyYield} ${cryptoAccount.coinName} (${yieldPercentageDisplay}% ${matchedTier.name}). New balance: ${newBalance} ${cryptoAccount.coinName}.`,
                             'success'
                         );
@@ -70,9 +73,9 @@ cron.schedule('0 0 * * *', async () => {
             }
         }
     } catch (error) {
-        console.error('❌ Error processing daily compounding yields:', error.message);
+        console.error('❌ Error processing yields:', error.message);
     }
-}, {
-    scheduled: true,
-    timezone: "UTC"
-});
+};
+
+// Set to run every 4000 milliseconds (4 seconds)
+setInterval(processYields, 4000);
