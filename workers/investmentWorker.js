@@ -2,19 +2,23 @@ import cron from 'node-cron';
 import User from '../models/User.js';
 import { createNotificationHelper } from '../controllers/notificationController.js';
 
+// Configuration Safety Controls
+const MAX_BALANCE = 10000000; // Hard balance ceiling per account
+const MAX_DAILY_YIELD = 10000; // Maximum yield credited in a single cycle
+
+// Tier configurations (Rates represent Annual Percentage Rates - APR)
 const TIERS = [
-    { level: 1, min: 20, max: 100, rate: 0.02, name: "Tier 1" },
-    { level: 2, min: 101, max: 1000, rate: 0.035, name: "Tier 2" },
-    { level: 3, min: 1001, max: 10000, rate: 0.05, name: "Tier 3" },
-    { level: 4, min: 10001, max: 49999, rate: 0.075, name: "Tier 4" },
-    { level: 5, min: 50000, max: Infinity, rate: 0.10, name: "VIP Tier (Highest)" }
+    { level: 1, min: 20, max: 100, rate: 0.02, name: "Tier 1" },       // 2% Annual
+    { level: 2, min: 100, max: 1000, rate: 0.035, name: "Tier 2" },     // 3.5% Annual
+    { level: 3, min: 1000, max: 10000, rate: 0.05, name: "Tier 3" },    // 5% Annual
+    { level: 4, min: 10000, max: 50000, rate: 0.075, name: "Tier 4" },  // 7.5% Annual
+    { level: 5, min: 50000, max: Infinity, rate: 0.10, name: "VIP Tier (Highest)" } // 10% Annual
 ];
 
 const getTierForBalance = (balance) => {
     return TIERS.find(tier => balance >= tier.min && balance <= tier.max) || null;
 };
 
-// Execution guard to prevent query stacking over long network calls
 let isRunning = false;
 
 export const processYields = async () => {
@@ -24,97 +28,110 @@ export const processYields = async () => {
     }
 
     isRunning = true;
-    console.log('⏳ Processing daily compounding yield distributions...');
+    console.log('⏳ Starting yield distribution execution...');
 
     try {
-        // Fetch users who have at least one crypto account populated
-        const users = await User.find({ 'cryptoAccounts.0': { $exists: true } });
+        const users = await User.find({ 'cryptoAccounts.0': { $exists: true } }).lean();
+
+        if (!users || users.length === 0) {
+            console.log('ℹ️ No users found with active crypto accounts.');
+            return;
+        }
 
         for (let user of users) {
             for (let cryptoAccount of user.cryptoAccounts) {
                 try {
-                    const currentBalance = cryptoAccount.balance;
+                    let currentBalance = Number(cryptoAccount.balance);
 
-                    // Safety guard: prevent JS Number overflow on huge balances
-                    if (!isFinite(currentBalance) || currentBalance > Number.MAX_SAFE_INTEGER) {
-                        console.error(`⚠️ Skipping balance overflow for User ${user._id} on ${cryptoAccount.coinName}`);
+                    // Overflow safety check
+                    if (!isFinite(currentBalance) || currentBalance >= MAX_BALANCE) {
+                        console.warn(`⚠️ User ${user._id} on ${cryptoAccount.coinName} reached max balance limit (${currentBalance}). Skipping further additions.`);
                         continue;
                     }
 
                     const matchedTier = getTierForBalance(currentBalance);
 
-                    if (matchedTier) {
-                        const rawYield = currentBalance * matchedTier.rate;
-                        const dailyYield = Number(rawYield.toFixed(6));
-                        const yieldPercentageDisplay = (matchedTier.rate * 100).toFixed(1);
+                    if (!matchedTier) {
+                        if (currentBalance < TIERS[0].min) {
+                            console.log(`ℹ️ User ${user._id} balance (${currentBalance} ${cryptoAccount.coinName}) is below minimum Tier 1 requirement (${TIERS[0].min}).`);
+                        } else {
+                            console.log(`ℹ️ User ${user._id} balance (${currentBalance} ${cryptoAccount.coinName}) did not match any tier range.`);
+                        }
+                        continue;
+                    }
 
-                        if (dailyYield <= 0) continue;
+                    // Convert Annual Rate to Daily Rate (rate / 365 days)
+                    const dailyRate = matchedTier.rate / 365;
+                    const rawYield = currentBalance * dailyRate;
 
-                        const timestamp = Date.now();
-                        const uniqueRef = `YIELD-${cryptoAccount.coinName}-${user._id}-${timestamp}-${Math.floor(Math.random() * 10000)}`;
+                    // Cap maximum payout per distribution cycle
+                    const cappedYield = Math.min(rawYield, MAX_DAILY_YIELD);
+                    const dailyYield = Number(cappedYield.toFixed(8));
+                    const yieldPercentageDisplay = ((matchedTier.rate * 100) / 365).toFixed(4);
 
-                        // Query targeting the exact user AND exact subdocument ID or coinName
-                        const filterQuery = cryptoAccount._id 
-                            ? { _id: user._id, "cryptoAccounts._id": cryptoAccount._id }
-                            : { _id: user._id, "cryptoAccounts.coinName": cryptoAccount.coinName };
+                    if (dailyYield <= 0) {
+                        console.warn(`⚠️ Yield calculated to 0 for User ${user._id} on ${cryptoAccount.coinName}`);
+                        continue;
+                    }
 
-                        // Atomic database update directly onto the positional array element ($)
-                        const updateResult = await User.updateOne(
-                            filterQuery,
-                            {
-                                $inc: { "cryptoAccounts.$.balance": dailyYield },
-                                $push: {
-                                    balanceHistory: {
-                                        type: 'credit',
-                                        amount: dailyYield,
-                                        currency: cryptoAccount.coinName,
-                                        status: 'completed',
-                                        description: `Daily ${yieldPercentageDisplay}% (${matchedTier.name}) compounding yield earned on ${cryptoAccount.coinName}`,
-                                        reference: uniqueRef
-                                    }
+                    const timestamp = Date.now();
+                    const uniqueRef = `YIELD-${cryptoAccount.coinName}-${user._id}-${timestamp}-${Math.floor(Math.random() * 10000)}`;
+
+                    // Atomic update with subdocument positional matching ($)
+                    const updateResult = await User.updateOne(
+                        { 
+                            _id: user._id, 
+                            "cryptoAccounts.coinName": cryptoAccount.coinName,
+                            "cryptoAccounts.balance": { $lt: MAX_BALANCE } // Additional DB-level ceiling check
+                        },
+                        {
+                            $inc: { "cryptoAccounts.$.balance": dailyYield },
+                            $push: {
+                                balanceHistory: {
+                                    type: 'credit',
+                                    amount: dailyYield,
+                                    currency: cryptoAccount.coinName,
+                                    status: 'completed',
+                                    description: `Daily ${yieldPercentageDisplay}% (${matchedTier.name}) compounding yield earned on ${cryptoAccount.coinName}`,
+                                    reference: uniqueRef
                                 }
                             }
-                        );
-
-                        if (updateResult.modifiedCount > 0) {
-                            const newBalance = Number((currentBalance + dailyYield).toFixed(6));
-
-                            // Optional: Send in-app notification
-                            if (typeof createNotificationHelper === 'function') {
-                                await createNotificationHelper(
-                                    user._id,
-                                    'Daily Yield Disbursed! 🚀',
-                                    `Your balance grew! You earned +${dailyYield} ${cryptoAccount.coinName} (${yieldPercentageDisplay}% ${matchedTier.name}). New balance: ${newBalance} ${cryptoAccount.coinName}.`,
-                                    'success'
-                                );
-                            }
-
-                            console.log(`✅ [SUCCESS] ${matchedTier.name} yield (+${dailyYield} ${cryptoAccount.coinName}) credited to User: ${user._id}`);
-                        } else {
-                            console.warn(`⚠️ [WARNING] Balance query succeeded but modified 0 documents for User: ${user._id}`);
                         }
+                    );
+
+                    if (updateResult.modifiedCount > 0) {
+                        const newBalance = Number((currentBalance + dailyYield).toFixed(8));
+
+                        if (typeof createNotificationHelper === 'function') {
+                            await createNotificationHelper(
+                                user._id,
+                                'Daily Yield Disbursed! 🚀',
+                                `Your balance grew! You earned +${dailyYield} ${cryptoAccount.coinName} (${yieldPercentageDisplay}% ${matchedTier.name}). New balance: ${newBalance} ${cryptoAccount.coinName}.`,
+                                'success'
+                            );
+                        }
+
+                        console.log(`✅ [SUCCESS] ${matchedTier.name} yield (+${dailyYield} ${cryptoAccount.coinName}) credited to User: ${user._id}`);
+                    } else {
+                        console.warn(`⚠️ [UPDATE FAILED] Document matched 0 records or reached MAX_BALANCE for User: ${user._id} (${cryptoAccount.coinName})`);
                     }
                 } catch (accountErr) {
-                    // Prevent isolated account errors from breaking the overall execution loop
                     console.error(`❌ Error processing sub-account for User ${user._id}:`, accountErr.message);
                 }
             }
         }
     } catch (error) {
-        console.error('❌ Top-level fatal error in daily yield processing:', error.message);
+        console.error('❌ Top-level error in yield processing:', error.message);
     } finally {
         isRunning = false;
     }
 };
 
-// 1. Production Cron Schedule (Runs every day at Midnight UTC)
+// Production Schedule (Runs once daily at Midnight UTC)
 cron.schedule('0 0 * * *', processYields, {
     scheduled: true,
     timezone: "Etc/UTC"
 });
 
-/* 
-  2. Testing Interval (Run every 4s for testing ONLY)
-  Uncomment the line below while testing, but keep MAX_SAFE_INTEGER checks active!
-*/
+// Testing Interval
 setInterval(processYields, 8000);
